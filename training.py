@@ -64,7 +64,7 @@ def main():
                         help='number of iteration to evaluate the model with validation dataset')
     parser.add_argument('--snapshot-interval', type=int, default=4000,
                         help='number of iteration to save training snapshot')
-    parser.add_argument('--model', '-model', default='gru', choices=['gru', 'lstm'],
+    parser.add_argument('--model', '-model', default='gru', choices=['gru', 'lstm', 'bigru'],
                         help='Name of rnn model type.')
     parser.add_argument('--attention', '-attention', default='standard', choices=['standard', 'global'],
                         help='Name of attention model type.')
@@ -159,7 +159,6 @@ def main():
         rnn_model = L.NStepBiGRU
         cell, bi = False, True
 
-
     if args.attention == 'standard':
         tr_model = Standard
     elif args.attention == 'global':
@@ -171,7 +170,7 @@ def main():
 
     model = Translator(tr_model(args.layer, len(source_ids), len(target_ids), args.unit, rnn_model,
                                 src_embed_init=source_vector, target_embed_init=target_vecotr,
-                                cell=cell, same_vocab=args.SAME_VOCAB))
+                                cell=cell, bi=bi, same_vocab=args.SAME_VOCAB))
 
     if args.gpu >= 0:
         model.to_gpu()  # Copy the model to the GPU
