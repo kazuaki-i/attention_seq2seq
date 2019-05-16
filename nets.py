@@ -143,9 +143,9 @@ class Seq2Seq(chainer.Chain):
             y_len_lst = [len(y) for y in ys]
             batch_size, x_len, y_len = len(xs), max(x_len_lst), max(y_len_lst) + 1
 
-            print(F.concat(self.translate([xs[0]], max_length=10, leaveEOS=True), axis=0))
+            # print(F.concat(self.translate([xs[0]], max_length=10, leaveEOS=True), axis=0))
             # print(self.translate([xs[0]], max_length=10))
-            print(ys[0])
+            # print(ys[0])
 
             xs, ys_in, ys_out = self._input_molding(xs, ys)
 
