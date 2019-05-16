@@ -9,7 +9,7 @@ from progressbar import ProgressBar
 import chainer
 from chainer import backend
 
-UNK, EOS = 0, 1
+UNK, EOS, BOS = 0, 1, 2
 
 
 def count_lines(path):
@@ -30,7 +30,7 @@ def count_up_vocab(fi_name):
 def write_vocab(word_ids, fo_name):
     with io.open(fo_name, 'w', encoding='utf-8') as f:
         for w, _ in sorted(word_ids.items(), key=itemgetter(1)):
-            if w not in ['<UNK>', '<EOS>']:
+            if w not in ['<UNK>', '<EOS>', '<BOS>']:
                 print(w, file=f)
 
     print('write vocab to {}'.format(fo_name))
@@ -43,11 +43,10 @@ def make_vocabulary(fi_name, fj_name=None, max_vocab_size=100000):
     if fj_name is not None:
         td.update(count_up_vocab(fj_name))
 
-    word_ids = dict()
-    word_ids['<UNK>'], word_ids['<EOS>'] = 0, 1
+    word_ids = {'<UNK>': 0, '<EOS>': 1, '<BOS>': 2}
 
     for n, (w, c) in enumerate(sorted(td.items(), key=itemgetter(1), reverse=True)):
-        word_ids.setdefault(w, n+2)
+        word_ids.setdefault(w, n+3)
         if max_vocab_size < n:
             break
 
@@ -57,16 +56,17 @@ def make_vocabulary(fi_name, fj_name=None, max_vocab_size=100000):
 def load_vocabulary(path):
     with io.open(path, encoding='utf-8') as f:
         # +2 for UNK and EOS
-        word_ids = {line.strip(): i + 2 for i, line in enumerate(f)}
+        word_ids = {line.strip(): i + 3 for i, line in enumerate(f)}
     word_ids['<UNK>'] = 0
     word_ids['<EOS>'] = 1
+    word_ids['<BOS>'] = 2
     return word_ids
 
 
 def load_word2vec_model(fi_name, units):
     print('load {} word2vec model'.format(fi_name))
     with open(fi_name, encoding='utf-8') as fi:
-        vocab = {'<UNK>': 0, '<EOS>': 1}
+        vocab = {'<UNK>': 0, '<EOS>': 1, '<BOS>': 2}
         vector = []
         for n, line in enumerate(fi):
             l_lst = line.strip().split()
@@ -74,12 +74,12 @@ def load_word2vec_model(fi_name, units):
                 # vocabsize = int(l_lst[0])
                 v_size = int(l_lst[1])
                 assert(units == v_size)
-                vector.append([random.uniform(-0.5, 0.5) for _ in range(v_size)])
-                vector.append([random.uniform(-0.5, 0.5) for _ in range(v_size)])
+                for _ in range(len(vocab)):
+                    vector.append([random.uniform(-0.5, 0.5) for _ in range(v_size)])
             else:
                 v = l_lst[0]
                 vec = [float(i) for i in l_lst[1:]]
-                vocab[v] = n + 1
+                vocab[v] = n + 2
                 vector.append(vec)
 
     return vocab, numpy.array(vector, numpy.float32)

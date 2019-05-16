@@ -12,7 +12,7 @@ import chainer.links as L
 
 random.seed(3)
 
-UNK, EOS = 0, 1
+UNK, EOS, BOS = 0, 1, 2
 
 parser = argparse.ArgumentParser()
 parser.add_argument('-i', '--input', dest='input', nargs='?', type=argparse.FileType('r'), default=sys.stdin,
@@ -40,6 +40,7 @@ class MT:
     def __init__(self, model, source_vocab, target_vocab):
         self.model = model
         self.translate = model.model.translate
+        # self.translate = model.model.translate_beam_search
         self.sv = source_vocab
         self.tv = target_vocab
         self.rv_tv = {i: w for w, i in self.tv.items()}
@@ -53,8 +54,7 @@ class MT:
         print(ys)
 
         y = [self.convert_i2s(y) for y in ys]
-
-        exit()
+        print(y)
 
 
     def convert_s2i(self, s_lst):
@@ -64,14 +64,14 @@ class MT:
         return ' '.join([self.rv_tv.get(i, '<UNK>') for i in t_lst])
 
 
-def load_vocab(fi_name, vector=False):
-    rd = {'<UNK>': 0, '<EOS>': 1}
+def load_vocab(fi_name):
+    rd = {'<UNK>': 0, '<EOS>': 1, '<BOS>': 2}
     with open(fi_name) as fi:
-        idx = 2
+        idx = 3
         for n, line in enumerate(fi):
-            if vector and n == 0:
-                continue
             l_lst = line.strip().split()
+            if n == 0 and len(l_lst) == 2:
+                continue
             rd.setdefault(l_lst[0], idx)
             idx += 1
 
@@ -80,29 +80,36 @@ def load_vocab(fi_name, vector=False):
 
 def main():
     p = json.load(open(args.parameter))
-    sd = load_vocab(args.source_vocab, args.wordvector)
-    td = load_vocab(args.target_vocab, args.wordvector)
+    sd = load_vocab(args.source_vocab)
+    td = load_vocab(args.target_vocab)
 
     # Setup model
     if p.get('model') == 'gru':
         rnn_model = L.NStepGRU
-        cell = False
+        cell, bi = False, False
     elif p.get('model') == 'lstm':
         rnn_model = L.NStepLSTM
-        cell = True
+        cell, bi = True, False
+    elif p.get('model') == 'bigru':
+        rnn_model = L.NStepBiGRU
+        cell, bi = False, True
+    elif p.get('model') == 'bilstm':
+        rnn_model = L.NStepBiLSTM
+        cell, bi = True, True
 
     if p.get('attention') == 'standard':
         tr_model = nets.Standard
     elif p.get('attention') == 'global':
-        tr_model = nets.GlobalAttention
+        tr_model = nets.Attention
 
     model = nets.Translator(tr_model(p.get('layer'), len(sd), len(td),
-                            p.get('unit'), rnn_model, cell, same_vocab=p.get('SAME_VOCAB')))
+                            p.get('unit'), rnn_model, cell, bi=bi, same_vocab=p.get('SAME_VOCAB')))
 
     chainer.serializers.load_npz(args.model, model)
     mt = MT(model, sd, td)
-    # x = mt('熱 さま シート')
+    x = mt('熱 さま シート')
     x = mt('アルミ ケース')
+    x = mt('透明 テープ')
     print(x)
 
     exit()

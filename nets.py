@@ -9,7 +9,7 @@ import chainer.links as L
 from chainer import training
 from chainer.training import extensions
 
-UNK, EOS = 0, 1
+UNK, EOS, BOS = 0, 1, 2
 
 
 class CalculatePerplexity(chainer.training.Extension):
@@ -41,26 +41,143 @@ def sequence_embed(embed, xs):
     return exs
 
 
-class Translator(chainer.Chain):
-    def __init__(self, model, dropout=0.1, debug=False):
-        super(Translator, self).__init__()
-        with self.init_scope():
-            self.model = model
+# class Translator(chainer.Chain):
+#     def __init__(self, model, dropout=0.1, debug=False):
+#         super(Translator, self).__init__()
+#         with self.init_scope():
+#             self.model = model
+#
+#         self.dropout = dropout
+#         self.debug = bool(debug)
+#         self.cell = self.model.cell
+#         self.eos = self.xp.array([EOS], numpy.int32)
+#
+#     def forward(self, xs, ys, train=True):
+#         with chainer.using_config('debug', self.debug):
+#             batch_size = len(xs)
+#             os, ys_out = self.model(xs, ys)
+#
+#             concat_os = F.concat(os, axis=0)
+#             concat_ys_out = F.concat(ys_out, axis=0)
+#             loss = F.sum(F.softmax_cross_entropy(
+#                 self.model.Wd(concat_os), concat_ys_out, reduce='no')) / batch_size
+#
+#             n_words = concat_ys_out.shape[0]
+#             perp = self.xp.exp(loss.array * batch_size / n_words)
+#
+#             if train:
+#                 chainer.report({'loss': loss}, self)
+#                 chainer.report({'perp': perp}, self)
+#                 return loss
+#             else:
+#                 return loss, perp
 
+
+
+class Seq2Seq(chainer.Chain):
+    def __init__(self, n_layers, n_source_vocab, n_target_vocab, n_units, encoder, decoder,
+                 src_embed_init=None, target_embed_init=None, attention=False, cell=False, bi=False,
+                 dropout=0.1, debug=False, same_vocab=True):
+        super(Seq2Seq, self).__init__()
+        self.bi = 2 if bi else 1
+        with self.init_scope():
+            if not isinstance(src_embed_init,  type(numpy.array([]))):
+                src_embed_init = chainer.initializers.Uniform(.25)
+            self.embed_x = L.EmbedID(n_source_vocab, n_units, initialW=src_embed_init, ignore_label=-1)
+
+            if same_vocab:
+                self.embed_y = self.embed_x
+            else:
+                if not isinstance(target_embed_init,  type(numpy.array([]))):
+                    target_embed_init = chainer.initializers.Uniform(.25)
+                self.embed_y = L.EmbedID(n_target_vocab, n_units, target_embed_init, ignore_label=-1)
+            self.encoder = encoder(n_layers, n_units, n_units, 0.1)
+            self.decoder = decoder(n_layers, n_units, n_units*self.bi, 0.1)
+            self.Wd = L.Linear(n_units*self.bi, n_target_vocab)
+            self.Wa = L.Linear(n_units*2, n_units)
+            self.attention_eh = L.Linear(n_units*self.bi, n_units)
+            self.attention_hh = L.Linear(n_units, n_units)
+            self.attention_hw = L.Linear(n_units*2, 1)
+
+        self.n_layers = n_layers
+        self.n_units = n_units
+        self.attention = attention
+        self.cell = cell
+        self.n_inf = -100000000
         self.dropout = dropout
-        self.debug = bool(debug)
-        self.cell = self.model.cell
-        self.eos = self.xp.array([EOS], numpy.int32)
+        self.debug = debug
+
+    def masking(self, x):
+        m = self.xp.sum(self.xp.absolute(x.data), axis=-1) > 0.
+        m = m[:, :, :, None]
+        m = self.xp.tile(m, (1, 1, 1, x.shape[-1]))
+        return m
+
+    def _input_molding(self, xs, ys):
+        # if self.bi == 1:
+        #     xs = [self.xp.array(x[::-1], numpy.int32) for x in xs]
+        # else:
+        #     xs = [self.xp.array(x, numpy.int32) for x in xs]
+        xs = [self.xp.array(x[::-1], numpy.int32) for x in xs]
+
+        eos = self.xp.array([EOS], numpy.int32)
+        bos = self.xp.array([BOS], numpy.int32)
+
+        ys_in = [F.concat([bos, self.xp.array(y, numpy.int32)], axis=0) for y in ys]
+        ys_out = [F.concat([self.xp.array(y, numpy.int32), eos], axis=0) for y in ys]
+
+        return xs, ys_in, ys_out
+
+    def convert_hidden_layer(self, h):
+        if self.bi > 1:
+            hs = h.shape
+            h = F.reshape(h, (self.bi, self.n_layers, hs[-2], hs[-1]))
+            # h = F.sum(h, axis=0)
+            h = F.transpose(h, (1, 2, 0, 3))
+            h = F.reshape(h, (self.n_layers, hs[-2], hs[-1]*self.bi))
+        return h
 
     def forward(self, xs, ys, train=True):
-        with chainer.using_config('debug', self.debug):
-            batch_size = len(xs)
-            os, ys_out = self.model(xs, ys)
+        with chainer.using_config('debug', self.debug), chainer.using_config('train', train):
+            x_len_lst = [len(x) for x in xs]
+            y_len_lst = [len(y) for y in ys]
+            batch_size, x_len, y_len = len(xs), max(x_len_lst), max(y_len_lst) + 1
 
-            concat_os = F.concat(os, axis=0)
+            print(F.concat(self.translate([xs[0]], max_length=10, leaveEOS=True), axis=0))
+            # print(self.translate([xs[0]], max_length=10))
+            print(ys[0])
+
+            xs, ys_in, ys_out = self._input_molding(xs, ys)
+
+            # Both xs and ys_in are lists of arrays.
+            exs = sequence_embed(self.embed_x, xs)
+            eys = sequence_embed(self.embed_y, ys_in)
+
+            # basic encoder and decoder
+            if self.cell:
+                hx, c, xos = self.encoder(None, None, exs)
+                hx = self.convert_hidden_layer(hx)
+                _, _, yos = self.decoder(hx, c, eys)
+            else:
+                hx, xos = self.encoder(None, exs)
+                hx = self.convert_hidden_layer(hx)
+                _, yos = self.decoder(hx, eys)
+
+            if self.attention:
+                xo = F.pad_sequence(xos, padding=0.)
+                yo = F.pad_sequence(yos, padding=0.)
+
+                xo = F.reshape(xo, (batch_size, x_len, self.bi, self.n_units))
+                yo = F.reshape(yo, (batch_size, y_len, self.bi, self.n_units))
+
+                yo = self.global_attention(xo, yo, x_len, y_len, batch_size)
+                yos = [F.reshape(h[:, :len(y), :], (len(y), h.shape[-1]))
+                       for h, y in zip(F.split_axis(yo, batch_size, axis=0), ys_out)]
+
+            concat_os = F.concat(yos, axis=0)
             concat_ys_out = F.concat(ys_out, axis=0)
             loss = F.sum(F.softmax_cross_entropy(
-                self.model.W(concat_os), concat_ys_out, reduce='no')) / batch_size
+                self.Wd(concat_os), concat_ys_out, reduce='no')) / batch_size
 
             n_words = concat_ys_out.shape[0]
             perp = self.xp.exp(loss.array * batch_size / n_words)
@@ -72,13 +189,49 @@ class Translator(chainer.Chain):
             else:
                 return loss, perp
 
+    def global_attention(self, xo, yo, x_len, y_len, batch_size):
+        def _batch_axis(v):
+            return len(v.shape) - 1
+        # shaping for calculate weighted average
+        eh = xo
+        hh = yo
+        eh = F.repeat(eh, y_len, axis=1)
+        hh = F.tile(hh, (1, x_len, 1, 1))
 
-class Utils:
-    def __init__(self, embed_x, embed_y, n_units, cell=False):
-        self.embed_x = embed_x
-        self.embed_y = embed_y
-        self.n_units = n_units
-        self.cell = cell
+        h = F.concat([eh, hh], axis=-1)
+        cond = self.xp.concatenate([self.masking(eh), self.masking(hh)], axis=-1)
+        h = F.where(cond, F.tanh(h), self.xp.full(cond.shape, 0., self.xp.float32))
+
+        # apply attention weight and soft max
+        h = self.attention_hw(h, n_batch_axes=_batch_axis(h))
+
+        h = F.reshape(h, (batch_size, x_len, y_len, self.bi))
+        cond = self.xp.reshape(self.xp.all(cond, axis=-1), h.shape)
+
+        h = F.where(cond, h, self.xp.full(h.shape, float(self.n_inf), self.xp.float32))
+        h = F.softmax(h, axis=1)
+        h = F.where(cond, h, self.xp.full(h.shape, 0., self.xp.float32))
+
+        # Calculate weighted average
+        h = h[:, :, :, :, None]
+        h = F.repeat(h, self.n_units, axis=-1)
+
+        xo = xo[:, :, None, :, :]
+        xo = F.repeat(xo, y_len, axis=2)
+
+        h = F.sum(h * xo, axis=1)
+
+        # Apply weighted average to yo
+        cond = self.xp.logical_and(self.masking(yo), self.masking(h))
+
+        h = F.concat([yo, h], axis=-1)
+        h = F.tanh(self.Wa(h, n_batch_axes=_batch_axis(h)))
+        h = F.where(cond, h, self.xp.full(h.shape, 0., self.xp.float32))
+
+        # Shaping input form
+        h = F.reshape(h, (batch_size, y_len, self.n_units*self.bi))
+
+        return h
 
     def eos_remover(self, result):
         outs = []
@@ -88,6 +241,55 @@ class Utils:
                 y = y[:inds[0, 0]]
             outs.append(y)
         return outs
+
+    def translate(self, xs, max_length=10, leaveEOS=False):
+        with chainer.no_backprop_mode(), chainer.using_config('train', False):
+            x_len_lst = [len(x) for x in xs]
+            batch_size, x_len = len(xs), max(x_len_lst)
+
+            xs = [self.xp.array(x[::-1], numpy.int32) for x in xs]
+            exs = sequence_embed(self.embed_x, xs)
+            if self.cell:
+                h, c, xos = self.encoder(None, None, exs)
+                h = self.convert_hidden_layer(h)
+            else:
+                h, xos = self.encoder(None, exs)
+                h = self.convert_hidden_layer(h)
+
+            xo = F.pad_sequence(xos, padding=0.)
+            xo = F.reshape(xo, (batch_size, x_len, self.bi, self.n_units))
+
+            ys = self.xp.full(batch_size, BOS, numpy.int32)
+            y_len = 1
+            result = []
+            for i in range(max_length):
+                eys = self.embed_y(ys)
+
+                eys = F.split_axis(eys, batch_size, 0)
+                if self.cell:
+                    h, c, yos = self.decoder(h, c, eys)
+                else:
+                    h, yos = self.decoder(h, eys)
+
+                if self.attention:
+                    yo = F.pad_sequence(yos, padding=0.)
+                    yo = F.reshape(yo, (batch_size, y_len, self.bi, self.n_units))
+
+                    a = self.global_attention(xo, yo, x_len, y_len, batch_size)
+
+                    yos = [F.reshape(y, (y_len, self.n_units*self.bi)) for y in F.split_axis(a, batch_size, axis=0)]
+
+                cys = F.concat(yos, axis=0)
+                wy = self.Wd(cys)
+                ys = self.xp.argmax(wy.array, axis=1).astype(numpy.int32)
+                result.append(ys)
+
+        if leaveEOS:
+            return result
+
+        result = self.xp.concatenate([x[None, :] for x in result]).T
+
+        return self.eos_remover(result)
 
     def beam_ranking(self, S, V, H, C, batch, beam_width, h_shape, c_shape):
         S = numpy.array(S).T
@@ -122,412 +324,71 @@ class Utils:
         return L
 
 
-class Attention(chainer.Chain):
-    def __init__(self, n_layers, n_source_vocab, n_target_vocab, n_units, rnn_model,
-                 src_embed_init=None, target_embed_init=None, cell=False, bi=False, same_vocab=True):
-        super(Attention, self).__init__()
-        self.bi = 2 if bi else 1
-        with self.init_scope():
-            if not isinstance(src_embed_init,  type(numpy.array([]))):
-                src_embed_init = chainer.initializers.Uniform(.25)
-            self.embed_x = L.EmbedID(n_source_vocab, n_units, initialW=src_embed_init, ignore_label=-1)
 
-            if same_vocab:
-                self.embed_y = self.embed_x
-            else:
-                if not isinstance(target_embed_init,  type(numpy.array([]))):
-                    target_embed_init = chainer.initializers.Uniform(.25)
-                self.embed_y = L.EmbedID(n_target_vocab, n_units, target_embed_init, ignore_label=-1)
-            self.encoder = rnn_model(n_layers, n_units, n_units, 0.1)
-            self.decoder = rnn_model(n_layers, n_units, n_units, 0.1)
-            self.W = L.Linear(n_units*self.bi, n_target_vocab)
-            self.AW = L.Linear(n_units*2, n_units)
-            self.attention_eh = L.Linear(n_units, n_units)
-            self.attention_hh = L.Linear(n_units, n_units)
-            self.attention_hw = L.Linear(n_units, 1)
-
-        self.n_layers = n_layers
-        self.n_units = n_units
-        self.cell = cell
-        self.utils = Utils(self.embed_x, self.embed_y, n_units)
-        self.n_inf = -100000000
-
-    def masking1(self, x):
-        m = self.xp.sum(self.xp.absolute(x.data), axis=-1) > 0.
-        m = m[:, :, :, None]
-        m = self.xp.tile(m, (1, 1, 1, x.shape[-1]))
-        return m
-
-    def masking2(self, input_len, max_len):
-        if self.bi > 1:
-            ml = [([True]*l+[False]*max_len)[:max_len] for l in input_len]
-        else:
-            ml = [([False]*max_len + [True]*l)[-max_len:] for l in input_len]
-        m = self.xp.array(ml, self.xp.bool)
-        m = self.xp.repeat(m, self.bi, axis=0)
-        return m
-
-    def forward(self, xs, ys):
-        x_len_lst = [len(x) for x in xs]
-        y_len_lst = [len(y) for y in ys]
-        batch_size, x_len, y_len = len(xs), max(x_len_lst), max(y_len_lst) + 1
-
-        if self.bi == 1:
-            xs = [self.xp.array(x[::-1], numpy.int32) for x in xs]
-        else:
-            xs = [self.xp.array(x, numpy.int32) for x in xs]
-
-        eos = self.xp.array([EOS], numpy.int32)
-        ys_in = [F.concat([eos, self.xp.array(y, numpy.int32)], axis=0) for y in ys]
-        ys_out = [F.concat([self.xp.array(y, numpy.int32), eos], axis=0) for y in ys]
-
-        # Both xs and ys_in are lists of arrays.
-        exs = sequence_embed(self.embed_x, xs)
-        eys = sequence_embed(self.embed_y, ys_in)
-
-        # base encoder and decoder
-        if self.cell:
-            hx, c, xos = self.encoder(None, None, exs)
-            _, _, yos = self.decoder(hx, c, eys)
-        else:
-            hx, xos = self.encoder(None, exs)
-            _, yos = self.decoder(hx, eys)
-
-        # Global Attention
-        # pad sequence
-        if self.bi == 1:
-            xo = [x[::-1, :] for x in xos]
-            xo = F.pad_sequence(xo, padding=0.)
-            xo = xo[:, ::-1, :]
-        else:
-            xo = F.pad_sequence(xos, padding=0.)
-        yo = F.pad_sequence(yos, padding=0.)
-
-        # reshape dividing for rnn layer
-        xo = F.reshape(xo, (batch_size, x_len, self.bi, self.n_units))
-        yo = F.reshape(yo, (batch_size, y_len, self.bi, self.n_units))
-
-        # apply attention weight
-        eh = self.attention_eh(xo, n_batch_axes=3)
-        hh = self.attention_hh(yo, n_batch_axes=3)
-
-        # sum eh to hh
-        eh = F.repeat(eh, y_len, axis=1)
-        hh = F.tile(hh, (1, x_len, 1, 1))
-        cond = self.xp.logical_and(self.masking1(eh), self.masking1(hh))
-        h = F.where(cond, F.tanh(eh + hh), self.xp.full(cond.shape, 0., self.xp.float32))
-
-        # apply attention weight and soft max
-        h = self.attention_hw(h, n_batch_axes=3)
-        h = F.reshape(h, (batch_size, x_len, y_len, self.bi))
-        cond = h.data != 0
-        h = F.where(cond, h, self.xp.full(h.shape, float(self.n_inf), self.xp.float32))
-        h = F.softmax(h, axis=1)
-        h = F.where(cond, h, self.xp.full(h.shape, 0., self.xp.float32))
-
-        # Sum weighted attention with lenght dividing
-        h = h[:, :, :, :, None]
-        h = F.repeat(h, self.n_units, axis=-1)
-
-        xo = F.repeat(xo[:, :, None, :, :], y_len, axis=2)
-
-        d = self.xp.reshape(self.xp.array(x_len_lst), (batch_size, 1, 1, 1, 1))
-        d = self.xp.tile(d, (1, x_len, y_len, 1, self.n_units))
-        d = self.xp.repeat(d, self.bi, axis=3)
-
-        h = F.sum(h * xo / d, axis=1)
-
-        # Marge yo and attention
-        cond = self.xp.logical_and(self.masking1(yo), self.masking1(h))
-        h = F.concat([yo, h], axis=-1)
-
-        h = F.tanh(self.AW(h, n_batch_axes=3))
-        h = F.where(cond, h, self.xp.full(h.shape, 0., self.xp.float32))
-
-        h = F.reshape(h, (batch_size, y_len, self.bi*self.n_units))
-
-        h = [F.reshape(h[:, :len(y), :], (len(y), h.shape[-1])) for h, y in zip(F.split_axis(h, batch_size, axis=0), ys_out)]
-
-        return h, ys_out
-
-
-    def _attention(self, ys, h, ox, eh, batch_size, max_len, mask1, mask2, zeros, n_inf):
-        # apply W_hh and shaping for eh calculation
-        hh = F.transpose(h, (1, 0, 2))
-        hh = F.reshape(hh, (self.n_layers*batch_size*self.bi, self.n_units))
-        hh = self.attention_hh(hh)
-        hh = F.tile(hh, (max_len, 1))
-
-        # sum between hh & eh, and apply tanh
-        hh = hh + eh
-        hh = F.tanh(hh)
-        hh = F.where(mask1, hh, zeros)
-
-        # apply W_hw and softmax
-        hw = self.attention_hw(hh)
-        hw = F.reshape(hw, (batch_size*self.bi, max_len))
-        hw = F.where(mask2, hw, n_inf)
-        hw = F.softmax(hw, axis=1)
-
-        # shaping for ox and　multiplication hw and ox
-        hw = F.reshape(hw, (batch_size, max_len, self.bi, 1))
-        hw = F.repeat(hw, self.n_units, axis=-1)
-        ha = F.sum(hw * ox, axis=1)
-
-        # attention layer's output
-        ys = F.reshape(ys, (batch_size, self.n_units))
-        ha = F.reshape(ha, (batch_size, self.n_units*self.bi))
-        a = F.concat([ys, ha], axis=-1)
-        a = F.tanh(self.AW(a))
-
-        # split for rnn
-        a = F.split_axis(a, batch_size, axis=0)
-
-        return a
-
-    def xs_padding(self, xs):
-        xs = [self.xp.array(x, numpy.int32) for x in xs]
-        xs = F.pad_sequence(xs, padding=-1)
-        if self.bi == 1:
-            xs = xs[:, ::-1]
-        exs = self.embed_x(xs)
-        exs = [F.reshape(x, x.shape[1:]) for x in F.split_axis(exs, len(xs), axis=0)]
-        return exs
-
-    def ys_padding(self, ys):
-        eos = self.xp.array([EOS], self.xp.int32)
-        ys_in = [F.concat([eos, self.xp.array(y, self.xp.int32)], axis=0) for y in ys]
-        ys_in = self.embed_y(F.pad_sequence(ys_in, padding=-1))
-        ys_in = [F.reshape(y, y.shape[1:]) for y in F.split_axis(ys_in, len(ys), axis=0)]
-        # ys_in = F.split_axis(ys_in, ys_in.shape[1], axis=1)
-
-        ys_out = [F.concat([self.xp.array(y, self.xp.int32), eos], axis=0) for y in ys]
-        ys_out = F.pad_sequence(ys_out, padding=-1)
-
-        return ys_in, ys_out
-
-    def translate(self, xs, max_length=10):
-        with chainer.no_backprop_mode(), chainer.using_config('train', False):
-            # Setup and embed xs
-            input_len = [len(x) for x in xs]
-            xs = self.xs_padding(xs)
-            batch_size, max_len = len(xs), len(xs[0])
-
-            # Seq2seq Encoder
-            if self.cell:
-                h, c, ox = self.encoder(None, None, xs)
-            else:
-                h, ox = self.encoder(None, xs)
-
-            # Setup for decoder parameter
-            oy = ox[-1]
-            ox = F.reshape(F.concat(ox, axis=0), (batch_size, oy.shape[0], oy.shape[1]))
-            eh = self.attention_eh(F.reshape(ox, (batch_size*max_len, self.n_units)))
-
-            # make masks
-            mask1 = self.masking1(eh)
-            mask2 = self.masking2(input_len, max_len)
-
-            # mask2 = self.xp.array([self.xp.array((, numpy.bool)
-            zeros = self.xp.full(mask1.shape, 0., self.xp.float32)
-            n_inf = self.xp.full(mask2.shape, float('-inf'), self.xp.float32)
-
-            ys = self.xp.full(batch_size, EOS, numpy.int32)
-            result = []
-            for i in range(max_length):
-                ys = self.embed_y(ys)
-                oa = self._attention( ys, h, ox, eh, batch_size, max_len, mask1, mask2, zeros, n_inf)
-                # Seq2seq Decoder
-                if self.cell:
-                    h, c, oy = self.decoder(h, c, oa)
-                else:
-                    h, oy = self.decoder(h, oa)
-                cys = F.reshape(F.concat(ys, axis=0), (batch_size, -1))
-                wy = self.W(cys)
-                ys = self.xp.argmax(wy.array, axis=1).astype(numpy.int32)
-                result.append(ys)
-
-                oy = F.concat(oy, axis=0)
-                # result.append(oy)
-        result = self.xp.concatenate([x[None, :] for x in result]).T
-
-        return self.utils.eos_remover(result)
-
-
-
-
-
-    def translate_beam_search(self, xs, max_length=10, beam_width=3):
-        batch = len(xs)
-        with chainer.no_backprop_mode(), chainer.using_config('train', False):
-            xs = self.xs_padding(xs)
-            batch_size, max_len = len(xs), len(xs[0])
-
-            if self.cell:
-                h, c, ox = self.encoder(None, None, xs)
-            else:
-                h, ox = self.encoder(None, xs)
-
-            ps = self.xp.full(batch, 0, numpy.float32)
-            py = self.xp.array([[EOS]*batch], numpy.int32)
-
-            oy = ox[-1]
-            ox = F.reshape(F.concat(ox, axis=0), (batch_size, oy.shape[0], oy.shape[1]))
-            eh = self.attention_eh(F.reshape(ox, (batch_size*max_len, self.n_units)))
-
-            L = [[ps, py, h]]*beam_width
-
-            for j in range(max_length):
-                S, V, H, C = [], [], [], []
-                for Y in L:
-                    # Calculate attention
-                    ys = self.embed_y(Y[1][-1])
-                    oa = self._attention(ys, ox, eh, batch_size, max_len)
-
-                    if self.cell:
-                        h, c, ys = self.decoder(Y[2], Y[3], F.split_axis(oa, oa.shape[0], axis=0))
-                    else:
-                        h, ys = self.decoder(Y[2], F.split_axis(oa, oa.shape[0], axis=0))
-
-                    cys = F.concat(ys, axis=0)
-                    wy = self.W(cys)
-                    score = self.xp.sort(wy.array, axis=1)[:, ::-1][:, :10].astype(numpy.float32)
-                    ys = self.xp.argsort(wy.array, axis=1)[:, ::-1][:, :10].astype(numpy.int32)
-
-                    for i in range(beam_width):
-                        S.append(numpy.array(Y[0] + numpy.log(score[:, i])))
-                        a = numpy.concatenate([Y[1], [ys[:, i]]], axis=0)
-                        V.append(a)
-                        H.append(h)
-                        if self.cell:
-                            C.append(c)
-
-                cs = c.shape if self.cell else None
-                L = self.utils.beam_ranking(S, V, H, C, batch, beam_width, h.shape, cs)
-
-        result = L[0][1].T[:, 1:]
-
-        return self.utils.eos_remover(result)
-
-
-class Standard(chainer.Chain):
-    def __init__(self, n_layers, n_source_vocab, n_target_vocab, n_units, rnn_model,
-                 src_embed_init=None, target_embed_init=None, cell=False, same_vocab=True):
-        super(Standard, self).__init__()
-        with self.init_scope():
-            if not isinstance(src_embed_init,  type(numpy.array([]))):
-                src_embed_init = chainer.initializers.Uniform(.25)
-            self.embed_x = L.EmbedID(n_source_vocab, n_units, initialW=src_embed_init, ignore_label=-1)
-            if same_vocab:
-                self.embed_y = self.embed_x
-            else:
-                if not isinstance(target_embed_init,  type(numpy.array([]))):
-                    target_embed_init = chainer.initializers.Uniform(.25)
-                self.embed_y = L.EmbedID(n_target_vocab, n_units, target_embed_init, ignore_label=-1)
-            self.encoder = rnn_model(n_layers, n_units, n_units, 0.1)
-            self.decoder = rnn_model(n_layers, n_units, n_units, 0.1)
-            self.W = L.Linear(n_units, n_target_vocab)
-            self.model_name = 'gru'
-
-        self.n_layers = n_layers
-        self.n_units = n_units
-        self.cell = cell
-        self.utils = Utils(self.embed_x, self.embed_y, n_units)
-
-    def forward(self, xs, ys):
-        xs = [self.xp.array(x[::-1], numpy.int32) for x in xs]
-
-        eos = self.xp.array([EOS], numpy.int32)
-        ys_in = [F.concat([eos, self.xp.array(y, numpy.int32)], axis=0) for y in ys]
-        ys_out = [F.concat([self.xp.array(y, numpy.int32), eos], axis=0) for y in ys]
-
-        # Both xs and ys_in are lists of arrays.
-        exs = sequence_embed(self.embed_x, xs)
-        eys = sequence_embed(self.embed_y, ys_in)
-
-        # None represents a zero vector in an encoder.
-
-        if self.cell:
-            hx, c, _ = self.encoder(None, None, exs)
-            _, c, os = self.decoder(hx, c, eys)
-        else:
-            hx, _ = self.encoder(None, exs)
-            _, os = self.decoder(hx, eys)
-
-        return os, ys_out
-
-    def translate(self, xs, max_length=10):
-        batch = len(xs)
-        with chainer.no_backprop_mode(), chainer.using_config('train', False):
-            xs = [x[::-1] for x in xs]
-            exs = sequence_embed(self.embed_x, xs)
-            if self.cell:
-                h, c, _ = self.encoder(None, None, exs)
-            else:
-                h, _ = self.encoder(None, exs)
-
-            ys = self.xp.full(batch, EOS, numpy.int32)
-            result = []
-            for i in range(max_length):
-                eys = self.embed_y(ys)
-                eys = F.split_axis(eys, batch, 0)
-                if self.cell:
-                    h, c, ys = self.decoder(h, c, eys)
-                else:
-                    h, ys = self.decoder(h, eys)
-                cys = F.concat(ys, axis=0)
-                wy = self.W(cys)
-                ys = self.xp.argmax(wy.array, axis=1).astype(numpy.int32)
-                result.append(ys)
-
-        result = self.xp.concatenate([x[None, :] for x in result]).T
-
-        return self.utils.eos_remover(result)
-
-    def translate_beam_search(self, xs, max_length=10, beam_width=3):
-        batch = len(xs)
-        with chainer.no_backprop_mode(), chainer.using_config('train', False):
-            xs = [x[::-1] for x in xs]
-            exs = sequence_embed(self.embed_x, xs)
-
-            if self.cell:
-                h, c, _ = self.encoder(None, None, exs)
-                pass
-            else:
-                h, _ = self.encoder(None, exs)
-            ps = self.xp.full(batch, 0, numpy.float32)
-            py = numpy.array([[EOS]*batch], numpy.int32)
-
-            L = [[ps, py, h]]*beam_width
-
-            for j in range(max_length):
-                S, V, H, C = [], [], [], []
-                for Y in L:
-                    eys = self.embed_y(Y[1][-1])
-                    eys = F.split_axis(eys, batch, 0)
-
-                    if self.cell:
-                        h, c, ys = self.decoder(Y[2], Y[3], eys)
-                    else:
-                        h, ys = self.decoder(Y[2], eys)
-
-                    cys = F.concat(ys, axis=0)
-                    wy = self.W(cys)
-                    score = self.xp.sort(wy.array, axis=1)[:, ::-1][:, :10].astype(numpy.float32)
-                    ys = self.xp.argsort(wy.array, axis=1)[:, ::-1][:, :10].astype(numpy.int32)
-
-                    for i in range(beam_width):
-                        S.append(numpy.array(Y[0] + numpy.log(score[:, i])))
-                        a = numpy.concatenate([Y[1], [ys[:, i]]], axis=0)
-                        V.append(a)
-                        H.append(h)
-                        if self.cell:
-                            C.append(c)
-
-                cs = c.shape if self.cell else None
-                L = self.utils.beam_ranking(S, V, H, C, batch, beam_width, h.shape, cs)
-
-        result = L[0][1].T[:, 1:]
-
-        return self.utils.eos_remover(result)
-
+    # def translate_beam_search(self, xs, max_length=10, beam_width=3):
+    #     with chainer.no_backprop_mode(), chainer.using_config('train', False):
+    #         x_len_lst = [len(x) for x in xs]
+    #         batch_size, x_len = len(xs), max(x_len_lst)
+    #
+    #         if self.bi == 1:
+    #             xs = [self.xp.array(x[::-1], numpy.int32) for x in xs]
+    #         else:
+    #             xs = [self.xp.array(x, numpy.int32) for x in xs]
+    #
+    #         exs = sequence_embed(self.embed_x, xs, self.xp)
+    #         if self.cell:
+    #             h, c, xos = self.encoder(None, None, exs)
+    #             pass
+    #         else:
+    #             h, xos = self.encoder(None, exs)
+    #
+    #         if self.bi == 1:
+    #             xo = [x[::-1, :] for x in xos]
+    #             xo = F.pad_sequence(xo, padding=0.)
+    #             xo = xo[:, ::-1, :]
+    #         else:
+    #             xo = F.pad_sequence(xos, padding=0.)
+    #         xo = F.reshape(xo, (batch_size, x_len, self.bi, self.n_units))
+    #
+    #         ps = self.xp.full(batch_size, 0, numpy.float32)
+    #         py = numpy.array([[EOS]*batch_size], numpy.int32)
+    #         L = [[ps, py, h]]*beam_width
+    #         y_len = 1
+    #
+    #         for j in range(max_length):
+    #             S, V, H, C = [], [], [], []
+    #             for Y in L:
+    #                 eys = self.embed_y(Y[1][-1])
+    #                 eys = F.split_axis(eys, batch_size, 0)
+    #
+    #                 if self.cell:
+    #                     h, c, yos = self.decoder(Y[2], Y[3], eys)
+    #                 else:
+    #                     h, yos = self.decoder(Y[2], eys)
+    #
+    #                 yo = F.pad_sequence(yos, padding=0.)
+    #                 yo = F.reshape(yo, (batch_size, y_len, self.bi, self.n_units))
+    #
+    #                 h = self.global_attention(xo, yo, x_len, y_len, batch_size, x_len_lst)
+    #
+    #                 ys = [F.reshape(y, (y_len, self.n_units)) for y in F.split_axis(h, batch_size, axis=0)]
+    #
+    #                 cys = F.concat(ys, axis=0)
+    #                 wy = self.W(cys)
+    #                 score = self.xp.sort(wy.array, axis=1)[:, ::-1][:, :10].astype(numpy.float32)
+    #                 ys = self.xp.argsort(wy.array, axis=1)[:, ::-1][:, :10].astype(numpy.int32)
+    #
+    #                 for i in range(beam_width):
+    #                     S.append(numpy.array(Y[0] + numpy.log(score[:, i])))
+    #                     a = numpy.concatenate([Y[1], [ys[:, i]]], axis=0)
+    #                     V.append(a)
+    #                     H.append(h)
+    #                     if self.cell:
+    #                         C.append(c)
+    #
+    #             cs = c.shape if self.cell else None
+    #             L = self.utils.beam_ranking(S, V, H, C, batch_size, beam_width, h.shape, cs)
+    #
+    #     result = L[0][1].T[:, 1:]
+    #
+    #     return self.utils.eos_remover(result)

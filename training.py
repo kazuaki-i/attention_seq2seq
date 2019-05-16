@@ -14,7 +14,7 @@ from utils import *
 from nets import *
 
 
-UNK, EOS = 0, 1
+UNK, EOS, BOS = 0, 1, 2
 
 
 def main():
@@ -150,27 +150,30 @@ def main():
 
     # Setup model
     if args.model == 'gru':
-        rnn_model = L.NStepGRU
+        encoder, decoder = L.NStepGRU, L.NStepGRU
         cell, bi = False, False
     elif args.model == 'lstm':
-        rnn_model = L.NStepLSTM
+        encoder, decoder = L.NStepLSTM, L.NStepLSTM
         cell, bi = True, False
     elif args.model == 'bigru':
-        rnn_model = L.NStepBiGRU
+        encoder, decoder = L.NStepBiGRU, L.NStepGRU
         cell, bi = False, True
+    elif args.model == 'bilstm':
+        encoder, decoder = L.NStepBiLSTM, L.NStepLSTM
+        cell, bi = True, True
 
     if args.attention == 'standard':
-        tr_model = Standard
+        attention = False
     elif args.attention == 'global':
-        tr_model = Attention
+        attention = True
 
     if args.gpu >= 0:
         # Make a specified GPU current
         chainer.backend.cuda.get_device_from_id(args.gpu).use()
 
-    model = Translator(tr_model(args.layer, len(source_ids), len(target_ids), args.unit, rnn_model,
-                                src_embed_init=source_vector, target_embed_init=target_vecotr,
-                                cell=cell, bi=bi, same_vocab=args.SAME_VOCAB))
+    model = Seq2Seq(args.layer, len(source_ids), len(target_ids), args.unit, encoder, decoder,
+                    src_embed_init=source_vector, target_embed_init=target_vecotr, attention=attention,
+                    cell=cell, bi=bi, dropout=0.1, debug=args.debug_mode, same_vocab=args.SAME_VOCAB)
 
     if args.gpu >= 0:
         model.to_gpu()  # Copy the model to the GPU
@@ -204,7 +207,7 @@ def main():
         if dev_data:
             record_trigger = training.triggers.MinValueTrigger('validation/main/perp', (1, 'epoch'))
         else:
-            record_trigger = training.triggers.MinValueTrigger('main/prep', (1, 'epoch'))
+            record_trigger = training.triggers.MinValueTrigger('main/perp', (1, 'epoch'))
         trainer.extend(extensions.snapshot_object(model, 'best_model.npz'), trigger=record_trigger)
 
     if dev_data:
@@ -224,7 +227,6 @@ def main():
         # Print a progress bar to stdout
         trainer.extend(extensions.ProgressBar())
 
-
     import os
     # Save vocabulary and model's setting
     if not os.path.isdir(args.out):
@@ -236,7 +238,7 @@ def main():
     model_setup['target_vocab_size'] = len(target_ids)
     model_setup['train_data_size'] = len(train_data)
     model_setup['dev_data_size'] = len(dev_data)
-    # model_setup['n_class'] = n_class
+    model_setup['dev_data_size'] = len(dev_data)
     # model_setup['datetime'] = current_datetime
     with open(os.path.join(args.out, 'args.json'), 'w') as f:
         json.dump(args.__dict__, f)
