@@ -39,7 +39,7 @@ args = parser.parse_args()
 class MT:
     def __init__(self, model, source_vocab, target_vocab):
         self.model = model
-        self.translate = model.model.translate
+        self.translate = model.translate
         # self.translate = model.model.translate_beam_search
         self.sv = source_vocab
         self.tv = target_vocab
@@ -85,25 +85,25 @@ def main():
 
     # Setup model
     if p.get('model') == 'gru':
-        rnn_model = L.NStepGRU
+        encoder, decoder = L.NStepGRU, L.NStepGRU
         cell, bi = False, False
     elif p.get('model') == 'lstm':
-        rnn_model = L.NStepLSTM
+        encoder, decoder = L.NStepLSTM, L.NStepLSTM
         cell, bi = True, False
     elif p.get('model') == 'bigru':
-        rnn_model = L.NStepBiGRU
+        encoder, decoder = L.NStepBiGRU, L.NStepGRU
         cell, bi = False, True
     elif p.get('model') == 'bilstm':
-        rnn_model = L.NStepBiLSTM
+        encoder, decoder = L.NStepBiLSTM, L.NStepLSTM
         cell, bi = True, True
 
     if p.get('attention') == 'standard':
-        tr_model = nets.Standard
+        attention = False
     elif p.get('attention') == 'global':
-        tr_model = nets.Attention
+        attention = True
 
-    model = nets.Translator(tr_model(p.get('layer'), len(sd), len(td),
-                            p.get('unit'), rnn_model, cell, bi=bi, same_vocab=p.get('SAME_VOCAB')))
+    model = nets.Seq2Seq(p.get('layer'), len(sd), len(td), p.get('unit'), encoder, decoder,
+                         attention=attention, cell=cell, bi=bi, feeding=p.get('feeding'), same_vocab=p.get('SAME_VOCAB'))
 
     chainer.serializers.load_npz(args.model, model)
     mt = MT(model, sd, td)

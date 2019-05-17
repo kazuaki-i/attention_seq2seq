@@ -58,7 +58,7 @@ def main():
                         help='maximum number of target vocabulary')
     parser.add_argument('--max-target-sentence', type=int, default=10,
                         help='maximum length of target sentence')
-    parser.add_argument('--log-interval', type=int, default=200,
+    parser.add_argument('--log-interval', type=int, default=4000,
                         help='number of iteration to show log')
     parser.add_argument('--validation-interval', type=int, default=4000,
                         help='number of iteration to evaluate the model with validation dataset')
@@ -71,6 +71,7 @@ def main():
     parser.add_argument('--out', '-o', default='result', help='directory to output the result')
     parser.add_argument('--gpu', '-g', dest='gpu', type=int, default=-1,
                         help='GPU ID (negative value indicates CPU)')
+    parser.add_argument('--feeding', action='store_true', help='apply input feeding to attention method')
     parser.add_argument('--progressbar', action='store_true', help='show training progressbar')
     parser.add_argument('--early-stop', action='store_true', help='use early stopping method')
     parser.add_argument('--snapshot-divide', action='store_true', help='save divide snapshot')
@@ -173,7 +174,7 @@ def main():
 
     model = Seq2Seq(args.layer, len(source_ids), len(target_ids), args.unit, encoder, decoder,
                     src_embed_init=source_vector, target_embed_init=target_vecotr, attention=attention,
-                    cell=cell, bi=bi, dropout=0.1, debug=args.debug_mode, same_vocab=args.SAME_VOCAB)
+                    cell=cell, bi=bi, feeding=args.feeding, dropout=0.1, debug=args.debug_mode, same_vocab=args.SAME_VOCAB)
 
     if args.gpu >= 0:
         model.to_gpu()  # Copy the model to the GPU
@@ -196,7 +197,8 @@ def main():
     # Take a snapshot
     if args.snapshot_divide:
         trainer.extend(
-            extensions.snapshot(filename='snapshot_iter_{.updater.iteration}'), trigger=(args.snapshot_interval, 'iteration'))
+            extensions.snapshot(filename='snapshot_iter_{.updater.epoch}'), trigger=(args.snapshot_interval, 'iteration'))
+        # extensions.snapshot(filename='snapshot_iter_{.updater.iteration}'), trigger=(args.snapshot_interval, 'iteration'))
     else:
         trainer.extend(extensions.snapshot(filename='snapshot_latest'), trigger=(args.snapshot_interval, 'iteration'))
 
@@ -237,7 +239,6 @@ def main():
     model_setup['source_vocab_size'] = len(source_ids)
     model_setup['target_vocab_size'] = len(target_ids)
     model_setup['train_data_size'] = len(train_data)
-    model_setup['dev_data_size'] = len(dev_data)
     model_setup['dev_data_size'] = len(dev_data)
     # model_setup['datetime'] = current_datetime
     with open(os.path.join(args.out, 'args.json'), 'w') as f:

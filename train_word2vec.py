@@ -43,7 +43,7 @@ def main():
     train_data = load_train_data(args.input)
     print('fin.({})'.format(time.time()-start))
 
-    model = word2vec.Word2Vec(train_data, sg=1, size=args.embed, window=args.window,
+    model = word2vec.Word2Vec(train_data, size=args.embed, window=args.window,
                               iter=args.iter, min_count=args.min)
 
     model.wv.save_word2vec_format(args.output)
