@@ -246,7 +246,7 @@ def main():
 
     if args.resume is not None:
         # Resume from a snapshot
-        chainer.serializers.load_npz(args.resume, trainer)
+        chainer.serializers.load_npz(args.resume, trainer, strict=False)
     print('start training')
 
     trainer.run()
