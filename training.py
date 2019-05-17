@@ -202,16 +202,6 @@ def main():
     else:
         trainer.extend(extensions.snapshot(filename='snapshot_latest'), trigger=(args.snapshot_interval, 'iteration'))
 
-    # Save a model
-    if args.save_epoch:
-        trainer.extend(extensions.snapshot_object(model, 'epoch{.updater.epoch}_model.npz'), trigger=(1, 'epoch'))
-    else:
-        if dev_data:
-            record_trigger = training.triggers.MinValueTrigger('validation/main/perp', (1, 'epoch'))
-        else:
-            record_trigger = training.triggers.MinValueTrigger('main/perp', (1, 'epoch'))
-        trainer.extend(extensions.snapshot_object(model, 'best_model.npz'), trigger=record_trigger)
-
     if dev_data:
         # Evaluate the model with the test dataset for each epoch
         trainer.extend(CalculatePerplexity(model, dev_data, 'validation/main'), trigger=(args.validation_interval, 'iteration'))
@@ -222,6 +212,17 @@ def main():
 
     trainer.extend(extensions.LogReport(trigger=(args.log_interval, 'iteration')))
     trainer.extend(extensions.PrintReport(monitor), trigger=(args.log_interval, 'iteration'))
+
+    # Save a model
+    if args.save_epoch:
+        trainer.extend(extensions.snapshot_object(model, 'epoch{.updater.epoch}_model.npz'), trigger=(1, 'epoch'))
+    else:
+        if dev_data:
+            record_trigger = training.triggers.MinValueTrigger('validation/main/perp', (1, 'epoch'))
+        else:
+            record_trigger = training.triggers.MinValueTrigger('main/perp', (1, 'epoch'))
+        trainer.extend(extensions.snapshot_object(model, 'best_model.npz'), trigger=record_trigger)
+
 
     # trainer.extend(extensions.snapshot(filename='snapshot_epoch_{.updater.iteration}'),
     #                trigger=(args.validation_interval, 'iteration'))
