@@ -194,14 +194,6 @@ def main():
         stop_trigger = (args.epoch, 'epoch')
     trainer = training.Trainer(updater, stop_trigger, out=args.out)
 
-    # Take a snapshot
-    if args.snapshot_divide:
-        trainer.extend(
-            extensions.snapshot(filename='snapshot_iter_{.updater.epoch}'), trigger=(args.snapshot_interval, 'iteration'))
-        # extensions.snapshot(filename='snapshot_iter_{.updater.iteration}'), trigger=(args.snapshot_interval, 'iteration'))
-    else:
-        trainer.extend(extensions.snapshot(filename='snapshot_latest'), trigger=(args.snapshot_interval, 'iteration'))
-
     if dev_data:
         # Evaluate the model with the test dataset for each epoch
         trainer.extend(CalculatePerplexity(model, dev_data, 'validation/main'), trigger=(args.validation_interval, 'iteration'))
@@ -223,6 +215,13 @@ def main():
             record_trigger = training.triggers.MinValueTrigger('main/perp', (1, 'epoch'))
         trainer.extend(extensions.snapshot_object(model, 'best_model.npz'), trigger=record_trigger)
 
+    # Take a snapshot
+    if args.snapshot_divide:
+        trainer.extend(
+            extensions.snapshot(filename='snapshot_iter_{.updater.epoch}'), trigger=(args.snapshot_interval, 'iteration'))
+        # extensions.snapshot(filename='snapshot_iter_{.updater.iteration}'), trigger=(args.snapshot_interval, 'iteration'))
+    else:
+        trainer.extend(extensions.snapshot(filename='snapshot_latest'), trigger=(args.snapshot_interval, 'iteration'))
 
     # trainer.extend(extensions.snapshot(filename='snapshot_epoch_{.updater.iteration}'),
     #                trigger=(args.validation_interval, 'iteration'))
@@ -247,7 +246,7 @@ def main():
 
     if args.resume is not None:
         # Resume from a snapshot
-        chainer.serializers.load_npz(args.resume, trainer, strict=False)
+        chainer.serializers.load_npz(args.resume, trainer, strict=False, ignore_names=['validation/main/perp', 'validation/main/loss'])
     print('start training')
 
     trainer.run()
