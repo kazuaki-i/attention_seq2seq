@@ -194,6 +194,9 @@ def main():
         stop_trigger = (args.epoch, 'epoch')
     trainer = training.Trainer(updater, stop_trigger, out=args.out)
 
+    trainer.extend(SnapshotTrainer(out=args.out), trigger=(1, 'epoch'))
+    # exit()
+
     if dev_data:
         # Evaluate the model with the test dataset for each epoch
         trainer.extend(CalculatePerplexity(model, dev_data, 'validation/main'), trigger=(args.validation_interval, 'iteration'))
@@ -216,12 +219,15 @@ def main():
         trainer.extend(extensions.snapshot_object(model, 'best_model.npz'), trigger=record_trigger)
 
     # Take a snapshot
-    if args.snapshot_divide:
-        trainer.extend(
-            extensions.snapshot(filename='snapshot_iter_{.updater.epoch}'), trigger=(args.snapshot_interval, 'iteration'))
-        # extensions.snapshot(filename='snapshot_iter_{.updater.iteration}'), trigger=(args.snapshot_interval, 'iteration'))
-    else:
-        trainer.extend(extensions.snapshot(filename='snapshot_latest'), trigger=(args.snapshot_interval, 'iteration'))
+    snapshot_type = 'epoch' if args.snapshot_dvide else 'latest'
+
+    # # Take a snapshot
+    # if args.snapshot_divide:
+    #     trainer.extend(
+    #         extensions.snapshot(filename='snapshot_iter_{.updater.epoch}'), trigger=(args.snapshot_interval, 'iteration'))
+    #     # extensions.snapshot(filename='snapshot_iter_{.updater.iteration}'), trigger=(args.snapshot_interval, 'iteration'))
+    # else:
+    #     trainer.extend(extensions.snapshot(filename='snapshot_latest'), trigger=(args.snapshot_interval, 'iteration'))
 
     # trainer.extend(extensions.snapshot(filename='snapshot_epoch_{.updater.iteration}'),
     #                trigger=(args.validation_interval, 'iteration'))

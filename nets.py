@@ -33,6 +33,22 @@ class CalculatePerplexity(chainer.training.Extension):
                 chainer.report({'{}/perp'.format(self.key): perp})
 
 
+class SnapshotTrainer(chainer.training.Extension):
+    def __init__(self, out, fo_name='snapshot', save_type='latest_only'):
+        self.out = out.rstrip('/') + '/' + fo_name
+        self.save_type = save_type
+
+    def __call__(self, trainer):
+        if self.save_type == 'epoch':
+            fo = '{}_epoch_{}'.format(self.out, trainer.updater.epoch)
+        elif self.save_type == 'iteration':
+            fo = '{}_iter_{}'.format(self.out, trainer.updater.iteration)
+        else:
+            fo = '{}_latest'.format(self.out)
+
+        chainer.serializers.save_npz(fo, trainer)
+
+
 def sequence_embed(embed, xs):
     x_len = [len(x) for x in xs]
     x_section = numpy.cumsum(x_len[:-1])

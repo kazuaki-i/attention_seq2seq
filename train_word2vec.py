@@ -18,7 +18,7 @@ parser.add_argument('-w', '--window', dest='window', default=5, type=int,
                     help='window size')
 parser.add_argument('-I', '--iter', dest='iter', default=5, type=int,
                     help='number of iteration')
-parser.add_argument('-m', '--min', dest='min', default=3, type=int,
+parser.add_argument('-m', '--min', dest='min', default=5, type=int,
                     help='min count of train token freq')
 parser.add_argument('-', '--', dest='', default='',
                     help='')

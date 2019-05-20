@@ -107,12 +107,7 @@ def main():
 
     chainer.serializers.load_npz(args.model, model)
     mt = MT(model, sd, td)
-    x = mt('熱 さま シート')
-    x = mt('アルミ ケース')
-    x = mt('透明 テープ')
-    print(x)
 
-    exit()
     print('※分かち書き済みのテキストを入力')
     while True:
         query = input('>>')
