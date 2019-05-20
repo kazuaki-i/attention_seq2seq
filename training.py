@@ -194,9 +194,6 @@ def main():
         stop_trigger = (args.epoch, 'epoch')
     trainer = training.Trainer(updater, stop_trigger, out=args.out)
 
-    trainer.extend(SnapshotTrainer(out=args.out), trigger=(1, 'epoch'))
-    # exit()
-
     if dev_data:
         # Evaluate the model with the test dataset for each epoch
         trainer.extend(CalculatePerplexity(model, dev_data, 'validation/main'), trigger=(args.validation_interval, 'iteration'))
@@ -218,8 +215,10 @@ def main():
             record_trigger = training.triggers.MinValueTrigger('main/perp', (1, 'epoch'))
         trainer.extend(extensions.snapshot_object(model, 'best_model.npz'), trigger=record_trigger)
 
-    # Take a snapshot
+    # Take a snapshot (original)
     snapshot_type = 'epoch' if args.snapshot_dvide else 'latest'
+    trainer.extend(SnapshotTrainer(out=args.out,  fo_name='snapshot', save_type=snapshot_type), trigger=(args.snapshot_interval, 'iteration'))
+    # trainer.extend(SnapshotTrainer(out=args.out,  fo_name='snapshot', save_type=snapshot_type), trigger=(1, 'epoch'))
 
     # # Take a snapshot
     # if args.snapshot_divide:
